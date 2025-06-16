@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 import asyncio
-import threading
+import time
 
 class PomodoroGUI:
     def __init__(self, root, todo_manager, pomodoro_timer, analytics):
@@ -10,7 +10,10 @@ class PomodoroGUI:
         self.pomodoro_timer = pomodoro_timer
         self.analytics = analytics
         self.running = False
-        self.loop = asyncio.get_event_loop()
+        self.current_cycle = 0
+        self.total_cycles = 0
+        self.current_phase = ""
+        self.remaining_time = 0
         self.root.title("番茄待办应用")
         self.setup_gui()
 
@@ -96,6 +99,7 @@ class PomodoroGUI:
             self.start_button.configure(text="启动番茄")
             self.running = False
             self.timer_label.configure(text="已暂停")
+            self.root.after_cancel(self.timer_update_id)
             return
 
         try:
@@ -113,22 +117,68 @@ class PomodoroGUI:
 
         self.running = True
         self.start_button.configure(text="暂停番茄")
-        threading.Thread(target=self.run_pomodoro, args=(todo_id, focus_time, break_time, cycles), daemon=True).start()
+        self.current_cycle = 1
+        self.total_cycles = cycles
+        self.current_phase = "focus"
+        self.remaining_time = focus_time * 60
+        self.pomodoro_params = (todo_id, focus_time, break_time, cycles)
+        self.start_pomodoro_session()
 
-    def run_pomodoro(self, todo_id, focus_time, break_time, cycles):
-        async def async_pomodoro():
-            self.timer_label.configure(text=f"第 1/{cycles} 轮：专注 {focus_time} 分钟")
-            await self.pomodoro_timer.start_pomodoro(todo_id, focus_time, break_time, cycles)
-            self.timer_label.configure(text="番茄时钟完成！")
-            self.start_button.configure(text="启动番茄")
-            self.running = False
-            self.root.event_generate("<<PomodoroDone>>", when="tail")
+    def start_pomodoro_session(self):
+        self.update_timer_label()
+        self.timer_update_id = self.root.after(1000, self.update_timer)
+        asyncio.run_coroutine_threadsafe(self.run_pomodoro(), asyncio.get_event_loop())
 
-        self.loop.run_until_complete(async_pomodoro())
+    def update_timer(self):
+        if not self.running:
+            return
+        self.remaining_time -= 1
+        self.update_timer_label()
+        if self.remaining_time > 0:
+            self.timer_update_id = self.root.after(1000, self.update_timer)
+        else:
+            self.advance_pomodoro()
+
+    def update_timer_label(self):
+        minutes = self.remaining_time // 60
+        seconds = self.remaining_time % 60
+        self.timer_label.configure(text=f"第 {self.current_cycle}/{self.total_cycles} 轮：{self.current_phase} {minutes:02d}:{seconds:02d}")
+
+    def advance_pomodoro(self):
+        todo_id, focus_time, break_time, cycles = self.pomodoro_params
+        if self.current_phase == "focus":
+            self.db.add_pomodoro_session(todo_id, focus_time, time.time() - focus_time * 60, "focus")
+            if self.current_cycle < cycles:
+                self.current_phase = "break"
+                self.remaining_time = break_time * 60
+                self.update_timer_label()
+                self.timer_update_id = self.root.after(1000, self.update_timer)
+            else:
+                self.finish_pomodoro()
+        else:  # break
+            self.db.add_pomodoro_session(todo_id, break_time, time.time() - break_time * 60, "break")
+            self.current_cycle += 1
+            if self.current_cycle <= cycles:
+                self.current_phase = "focus"
+                self.remaining_time = focus_time * 60
+                self.update_timer_label()
+                self.timer_update_id = self.root.after(1000, self.update_timer)
+            else:
+                self.finish_pomodoro()
+
+    def finish_pomodoro(self):
+        self.running = False
+        self.start_button.configure(text="启动番茄")
+        self.timer_label.configure(text="番茄时钟完成！")
+        self.root.event_generate("<<PomodoroDone>>", when="tail")
+
+    async def run_pomodoro(self):
+        todo_id, focus_time, break_time, cycles = self.pomodoro_params
+        await self.pomodoro_timer.start_pomodoro(todo_id, focus_time, break_time, cycles)
 
     def show_analytics(self):
         self.analytics_text.delete(1.0, tk.END)
-        sessions = self.pomodoro_timer.db.get_pomodoro_sessions()
+        sessions = self.pomodoro_timer.db.get_pomodoros()
         if not sessions:
             self.analytics_text.insert(tk.END, "暂无番茄时钟记录。\n")
             return
