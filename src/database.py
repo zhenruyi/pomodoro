@@ -3,7 +3,7 @@ import time
 import os
 
 class Database:
-    def __init__(self, db_path="data/database.sqlite"):
+    def __init__(self, db_path="../data/database.sqlite"):
         self.db_path = db_path
         self.conn = None
         self.cursor = None
